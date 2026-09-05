@@ -32,3 +32,18 @@ def test_cli_pack_json(tmp_path, capsys):
     payload = json.loads(capsys.readouterr().out)
     assert payload["stats"]["cards"] >= 1
     assert "markdown" in payload
+
+
+def test_cli_grade_command(tmp_path, capsys):
+    trace_path = tmp_path / "opus.json"
+    trace_path.write_text(frontier_auth_fix().model_dump_json(), encoding="utf-8")
+    store = str(tmp_path / "s")
+    code = main(["--store", store, "grade", str(trace_path)])
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "Behavior grade" in out
+    assert "explored_first" in out
+    code = main(["--store", store, "grade", str(trace_path), "--json"])
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["score"] >= 0.8
+    assert payload["model"] == "claude-opus-4.1"
