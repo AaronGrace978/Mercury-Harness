@@ -1,7 +1,9 @@
 """Distill HOW a frontier agent operated into operational cards.
 
 This is not answer distillation. Cards capture procedure: tool order,
-recovery loops, first-action policy, and self-corrections.
+recovery loops, first-action policy, self-corrections — and, where the
+trace allows, the *decision function*: what was chosen and what was
+ruled out, not only the observed path.
 """
 
 from __future__ import annotations
@@ -19,14 +21,38 @@ from mercury.models import (
     card_id,
 )
 from mercury.phases import (
-    EDIT_TOOLS,
-    EXPLORE_TOOLS,
-    LOCALIZE_TOOLS,
-    VERIFY_TOOLS,
     contains_self_correction,
     first_tool,
+    first_tool_family,
+    is_edit_tool,
+    is_evidence_tool,
+    is_explore_tool,
+    is_localize_tool,
+    is_verify_tool,
+    normalize_tool,
     segment_phases,
 )
+
+# Default standing orders used when the store has no successful frontier
+# volume yet. Marked provisional so packs are never empty on cold start.
+_SEED_ORDERS: list[tuple[str, str, str]] = [
+    (
+        "Search before reading or editing",
+        "Starting a coding task in an unfamiliar area",
+        "Run a targeted search (grep/glob/semantic) before opening large files or editing.",
+    ),
+    (
+        "Verify after every edit batch",
+        "After changing production code",
+        "Run the smallest relevant test or command and read the failure before editing again.",
+    ),
+    (
+        "Read the failing site before patching",
+        "A bug or failing test has been named",
+        "Open the implicated file and the nearest test before writing a patch.",
+    ),
+]
+
 
 def distill_trace(trace: AgentTrace, *, teacher: bool = True) -> list[OperationalCard]:
     """Extract operational cards from a single agent trace."""
@@ -38,67 +64,126 @@ def distill_trace(trace: AgentTrace, *, teacher: bool = True) -> list[Operationa
             cards.append(playbook)
         cards.extend(_tool_policy_cards(trace, phases))
         cards.extend(_heuristic_cards(trace, phases))
+        cards.extend(_decision_cards(trace, phases))
     cards.extend(_recovery_cards(trace))
     cards.extend(_anti_pattern_cards(trace))
     return cards
 
 
 def distill_standing_orders(traces: list[AgentTrace]) -> list[OperationalCard]:
-    """Majority frontier behaviors become standing orders for lesser models."""
-    if len(traces) < 2:
-        return []
-    successful = [trace for trace in traces if trace.outcome.succeeded]
-    if len(successful) < 2:
-        return []
+    """Standing orders from frontier majority — with cold-start fallbacks.
 
-    orders: list[tuple[str, str, str, float]] = []
-    explore_first = sum(1 for trace in successful if _starts_with(trace, EXPLORE_TOOLS))
-    if explore_first / len(successful) >= 0.6:
+    - 0 successful traces → seeded defaults (provisional, low confidence)
+    - 1 successful trace → that trace's observed policies (provisional)
+    - ≥2 successful traces → majority thresholds (confirmed)
+    """
+    successful = [trace for trace in traces if trace.outcome.succeeded]
+    if not successful:
+        return _seed_standing_orders(traces)
+
+    n = len(successful)
+    provisional = n < 2
+    # Cold start: fire on the single observed signal. After volume arrives,
+    # require majority agreement so noise from one odd run does not stick.
+    explore_threshold = 0.99 if provisional else 0.6
+    verify_threshold = 0.99 if provisional else 0.5
+    localize_threshold = 0.99 if provisional else 0.5
+
+    orders: list[tuple[str, str, str, float, bool]] = []
+    explore_first = sum(1 for trace in successful if _starts_with_explore(trace))
+    if explore_first / n >= explore_threshold:
         orders.append(
             (
                 "Search before reading or editing",
                 "Starting a coding task in an unfamiliar area",
                 "Run a targeted search (grep/glob/semantic) before opening large files or editing.",
-                explore_first / len(successful),
+                explore_first / n,
+                provisional,
             )
         )
     verify_after_edit = sum(1 for trace in successful if _edited_then_verified(trace))
-    if verify_after_edit / len(successful) >= 0.5:
+    if verify_after_edit / n >= verify_threshold:
         orders.append(
             (
                 "Verify after every edit batch",
                 "After changing production code",
                 "Run the smallest relevant test or command and read the failure before editing again.",
-                verify_after_edit / len(successful),
+                verify_after_edit / n,
+                provisional,
             )
         )
     localize_before_edit = sum(1 for trace in successful if _localized_before_edit(trace))
-    if localize_before_edit / len(successful) >= 0.5:
+    if localize_before_edit / n >= localize_threshold:
         orders.append(
             (
                 "Read the failing site before patching",
                 "A bug or failing test has been named",
                 "Open the implicated file and the nearest test before writing a patch.",
-                localize_before_edit / len(successful),
+                localize_before_edit / n,
+                provisional,
             )
         )
 
+    # If the single provisional trace fired nothing, still seed defaults so
+    # the pack is never empty waiting for majority volume.
+    if provisional and not orders:
+        return _seed_standing_orders(successful)
+
     cards: list[OperationalCard] = []
     source = successful[0]
-    for title, situation, procedure, confidence in orders:
+    for title, situation, procedure, confidence, is_provisional in orders:
+        if is_provisional:
+            rationale = (
+                f"Provisional standing order from 1 successful frontier trace "
+                f"({source.model}). Will harden once a majority across traces agrees."
+            )
+            card_confidence = min(0.7, 0.45 + confidence * 0.2)
+        else:
+            rationale = f"Observed in {int(confidence * 100)}% of successful frontier traces."
+            card_confidence = min(0.95, 0.55 + confidence * 0.4)
         cards.append(
             OperationalCard(
-                id=card_id("standing", title, procedure),
+                # Stable id by title so seed → provisional → majority upserts in place.
+                id=card_id("standing", title),
                 kind=CardKind.STANDING_ORDER,
                 title=title,
                 situation=situation,
                 procedure=procedure,
-                rationale=f"Observed in {int(confidence * 100)}% of successful frontier traces.",
+                rationale=rationale,
                 tools=[],
                 task_type=TaskType.GENERAL,
                 source_trace_id=source.id,
                 source_model=source.model,
-                confidence=min(0.95, 0.55 + confidence * 0.4),
+                confidence=card_confidence,
+                metadata={"provisional": is_provisional, "support": n, "rate": confidence},
+            )
+        )
+    return cards
+
+
+def _seed_standing_orders(traces: list[AgentTrace]) -> list[OperationalCard]:
+    """Bootstrap standing orders before any successful frontier volume exists."""
+    source_id = traces[0].id if traces else "seed"
+    source_model = traces[0].model if traces else "mercury-seed"
+    cards: list[OperationalCard] = []
+    for title, situation, procedure in _SEED_ORDERS:
+        cards.append(
+            OperationalCard(
+                id=card_id("standing", title),
+                kind=CardKind.STANDING_ORDER,
+                title=title,
+                situation=situation,
+                procedure=procedure,
+                rationale=(
+                    "Seeded cold-start standing order. Replace with majority "
+                    "frontier evidence as soon as two successful teacher traces exist."
+                ),
+                tools=[],
+                task_type=TaskType.GENERAL,
+                source_trace_id=source_id,
+                source_model=source_model,
+                confidence=0.42,
+                metadata={"provisional": True, "seeded": True, "support": 0},
             )
         )
     return cards
@@ -197,6 +282,10 @@ def _tool_policy_cards(trace: AgentTrace, phases: list) -> list[OperationalCard]
         )
     opener = first_tool(trace)
     if opener:
+        family = normalize_tool(opener)
+        rejected = []
+        if is_explore_tool(opener) or is_localize_tool(opener):
+            rejected = ["edit-first", "patch without evidence"]
         cards.append(
             OperationalCard(
                 id=card_id("first", trace.id, opener),
@@ -206,6 +295,8 @@ def _tool_policy_cards(trace: AgentTrace, phases: list) -> list[OperationalCard]
                 procedure=f"Start with `{opener}` rather than editing. Gather evidence first.",
                 rationale="Frontier models disproportionately open with search/read, not patches.",
                 tools=[opener],
+                chose=f"{family} via `{opener}`",
+                rejected=rejected,
                 task_type=trace.task_type,
                 source_trace_id=trace.id,
                 source_model=trace.model,
@@ -213,6 +304,184 @@ def _tool_policy_cards(trace: AgentTrace, phases: list) -> list[OperationalCard]
                 languages=list(trace.languages),
             )
         )
+    return cards
+
+
+def _decision_cards(trace: AgentTrace, phases: list) -> list[OperationalCard]:
+    """Emit cards that encode judgment: chose X over Y, not just the path taken.
+
+    Surface signals used:
+    - Opening move (explore/localize vs edit)
+    - File focus (which of the discovered paths were actually edited)
+    - Self-corrections (explicit rejection of the first impulse)
+    - Recovery after error (changed approach rather than blind retry)
+    """
+    cards: list[OperationalCard] = []
+    opener = first_tool(trace)
+    opener_family = first_tool_family(trace)
+    if opener and opener_family in {"explore", "localize"}:
+        cards.append(
+            OperationalCard(
+                id=card_id("decision-open", trace.id, opener),
+                kind=CardKind.DECISION,
+                title="Chose evidence-gathering over an immediate edit",
+                situation=f"Opening a {trace.task_type.value} task like: {trace.task}",
+                procedure=(
+                    f"Chose `{opener}` ({opener_family}) as the first move. "
+                    "Do not open with an edit tool even if a likely file comes to mind."
+                ),
+                rationale="The decision function is the first move: gather evidence, reject edit-first.",
+                tools=[opener],
+                chose=f"start with {opener_family}",
+                rejected=["start with edit", "patch the first file that sounds related"],
+                task_type=trace.task_type,
+                source_trace_id=trace.id,
+                source_model=trace.model,
+                confidence=0.8 if trace.outcome.succeeded else 0.5,
+                languages=list(trace.languages),
+                metadata={"decision": "first_action"},
+            )
+        )
+
+    # File focus: paths that appeared in explore/read but were never edited.
+    seen_paths: list[str] = []
+    edited_paths: set[str] = set()
+    for event in trace.events:
+        for path in extract_paths(event):
+            base = path
+            if base not in seen_paths:
+                seen_paths.append(base)
+        if event.type is EventType.ASSISTANT:
+            for call in event.tool_calls:
+                if is_edit_tool(call.name):
+                    for key in ("path", "file", "file_path"):
+                        value = call.arguments.get(key)
+                        if isinstance(value, str) and value.strip():
+                            edited_paths.add(value.strip())
+    skipped = [path for path in seen_paths if path not in edited_paths]
+    if edited_paths and skipped:
+        edited_bases = [_basename(path) for path in list(edited_paths)[:4]]
+        skipped_bases = [_basename(path) for path in skipped[:4]]
+        cards.append(
+            OperationalCard(
+                id=card_id("decision-files", trace.id, ",".join(sorted(edited_bases))),
+                kind=CardKind.DECISION,
+                title="Chose the real fault site over nearby files",
+                situation=trace.task,
+                procedure=(
+                    f"Chose to edit {', '.join(f'`{name}`' for name in edited_bases)}. "
+                    f"Left alone: {', '.join(f'`{name}`' for name in skipped_bases)}. "
+                    "Touch the implicated site; do not rewrite a neighboring page that merely mentions the symptom."
+                ),
+                rationale="File selection is a decision, not a side effect of the path taken.",
+                tools=["read", "grep"] + list(edited_paths)[:2],
+                chose=", ".join(edited_bases),
+                rejected=skipped_bases,
+                task_type=trace.task_type,
+                source_trace_id=trace.id,
+                source_model=trace.model,
+                confidence=0.76 if trace.outcome.succeeded else 0.45,
+                languages=list(trace.languages),
+                metadata={"decision": "file_focus", "edited": list(edited_paths)[:8]},
+            )
+        )
+
+    for event in contains_self_correction(trace):
+        snippet = event.content.strip().splitlines()[0][:180]
+        cards.append(
+            OperationalCard(
+                id=card_id("decision-correct", trace.id, snippet),
+                kind=CardKind.DECISION,
+                title="Rejected the first impulse after re-reading evidence",
+                situation=trace.task,
+                procedure=(
+                    f"The frontier agent overruled its own first impulse: {snippet} "
+                    "Treat the corrected approach as the decision; discard the impulse."
+                ),
+                rationale="Self-corrections expose the rejected branch that pure path cards hide.",
+                tools=event.tool_names(),
+                chose="revised approach after re-evaluation",
+                rejected=["keep the first impulse"],
+                task_type=trace.task_type,
+                source_trace_id=trace.id,
+                source_model=trace.model,
+                confidence=0.72,
+                languages=list(trace.languages),
+                metadata={"decision": "self_correction"},
+            )
+        )
+
+    # Recovery-as-decision: after an error, the next action changed.
+    events = trace.events
+    for index, event in enumerate(events):
+        if event.type is not EventType.TOOL or not event.is_error:
+            continue
+        prev_tools = []
+        for prior in events[:index]:
+            if prior.type is EventType.ASSISTANT and prior.tool_calls:
+                prev_tools = [call.name for call in prior.tool_calls]
+        next_tools: list[str] = []
+        for later in events[index + 1 : index + 5]:
+            if later.type is EventType.ASSISTANT and later.tool_calls:
+                next_tools = [call.name for call in later.tool_calls]
+                break
+        if not prev_tools or not next_tools:
+            continue
+        if [normalize_tool(name) for name in prev_tools] == [normalize_tool(name) for name in next_tools]:
+            # Same family retry — only interesting if args changed; blind_retry
+            # already covers identical args. Skip same-family same-move here.
+            continue
+        signature = error_signature(event.content) or (event.tool_name or "tool error")
+        cards.append(
+            OperationalCard(
+                id=card_id("decision-recover", trace.id, signature, ",".join(next_tools)),
+                kind=CardKind.DECISION,
+                title="Chose a new approach after the failure",
+                situation=f"A tool result looks like: {signature}",
+                procedure=(
+                    f"After the failure, switched from `{', '.join(prev_tools[:3])}` "
+                    f"to `{', '.join(next_tools[:3])}`. Do not repeat the failed move unchanged."
+                ),
+                rationale="Recovery is a decision against the previous action, not just the next step on the path.",
+                tools=_unique(prev_tools + next_tools),
+                chose=", ".join(next_tools[:3]),
+                rejected=[f"repeat `{name}` unchanged" for name in prev_tools[:3]],
+                task_type=trace.task_type,
+                source_trace_id=trace.id,
+                source_model=trace.model,
+                confidence=0.78 if trace.outcome.succeeded else 0.55,
+                languages=list(trace.languages),
+                error_signature=signature,
+                metadata={"decision": "recovery_switch"},
+            )
+        )
+
+    # Phase-order decision: verify after edit when present.
+    phase_names = [phase.name for phase in phases]
+    if "edit" in phase_names and "verify" in phase_names:
+        if phase_names.index("edit") < _last_index(phase_names, "verify"):
+            cards.append(
+                OperationalCard(
+                    id=card_id("decision-verify", trace.id),
+                    kind=CardKind.DECISION,
+                    title="Chose to verify instead of editing again",
+                    situation="You just changed production code",
+                    procedure=(
+                        "After the edit batch, run the relevant test or command before another patch. "
+                        "Reject the urge to keep editing on faith."
+                    ),
+                    rationale="Verification is an explicit choice against edit-thrash.",
+                    tools=[name for name in trace.tool_sequence() if is_verify_tool(name)][:3],
+                    chose="verify after edit",
+                    rejected=["edit again without evidence", "assume the patch worked"],
+                    task_type=trace.task_type,
+                    source_trace_id=trace.id,
+                    source_model=trace.model,
+                    confidence=0.74 if trace.outcome.succeeded else 0.4,
+                    languages=list(trace.languages),
+                    metadata={"decision": "verify_after_edit"},
+                )
+            )
     return cards
 
 
@@ -276,6 +545,8 @@ def _recovery_cards(trace: AgentTrace) -> list[OperationalCard]:
                 procedure=f"Do not retry the same call unchanged. Next: {procedure}",
                 rationale="Copied from the frontier agent's actual recovery loop.",
                 tools=_unique(follow_tools),
+                chose=procedure[:120],
+                rejected=["retry the same call unchanged"],
                 task_type=trace.task_type,
                 source_trace_id=trace.id,
                 source_model=trace.model,
@@ -300,6 +571,8 @@ def _anti_pattern_cards(trace: AgentTrace) -> list[OperationalCard]:
                 procedure=f"The frontier agent corrected itself: {snippet}",
                 rationale="Self-corrections are negative knowledge: the first impulse was the lesser-model move.",
                 tools=event.tool_names(),
+                chose="corrected approach",
+                rejected=["keep the first impulse"],
                 task_type=trace.task_type,
                 source_trace_id=trace.id,
                 source_model=trace.model,
@@ -307,7 +580,8 @@ def _anti_pattern_cards(trace: AgentTrace) -> list[OperationalCard]:
                 languages=list(trace.languages),
             )
         )
-    if trace.outcome.failed and first_tool(trace) and first_tool(trace).lower() in {name.lower() for name in EDIT_TOOLS}:
+    opener = first_tool(trace)
+    if trace.outcome.failed and opener and is_edit_tool(opener):
         cards.append(
             OperationalCard(
                 id=card_id("anti-edit-first", trace.id),
@@ -317,6 +591,8 @@ def _anti_pattern_cards(trace: AgentTrace) -> list[OperationalCard]:
                 procedure="Editing as the first action failed. Search and read first, then patch a localized site.",
                 rationale="Failed trajectory opened with an edit tool.",
                 tools=trace.tool_sequence()[:4],
+                chose="(should have) search/read first",
+                rejected=["edit as first action"],
                 task_type=trace.task_type,
                 source_trace_id=trace.id,
                 source_model=trace.model,
@@ -339,6 +615,8 @@ def _anti_pattern_cards(trace: AgentTrace) -> list[OperationalCard]:
                 ),
                 rationale="Repeating a failed edit unchanged is the strongest negative signal in the trace.",
                 tools=[action.name],
+                chose="change approach after failure",
+                rejected=[f"repeat `{action.name}` unchanged"],
                 task_type=trace.task_type,
                 source_trace_id=trace.id,
                 source_model=trace.model,
@@ -402,23 +680,23 @@ def _last_index(items: list[str], value: str) -> int:
     return index
 
 
-def _starts_with(trace: AgentTrace, tools: set[str]) -> bool:
+def _starts_with_explore(trace: AgentTrace) -> bool:
     opener = first_tool(trace)
-    return bool(opener) and opener.lower() in tools
+    return bool(opener) and is_explore_tool(opener)
 
 
 def _edited_then_verified(trace: AgentTrace) -> bool:
-    names = [name.lower() for name in trace.tool_sequence()]
-    edit_at = next((i for i, name in enumerate(names) if name in EDIT_TOOLS), None)
+    names = trace.tool_sequence()
+    edit_at = next((i for i, name in enumerate(names) if is_edit_tool(name)), None)
     if edit_at is None:
         return False
-    return any(name in VERIFY_TOOLS for name in names[edit_at + 1 :])
+    return any(is_verify_tool(name) for name in names[edit_at + 1 :])
 
 
 def _localized_before_edit(trace: AgentTrace) -> bool:
-    names = [name.lower() for name in trace.tool_sequence()]
-    read_at = next((i for i, name in enumerate(names) if name in LOCALIZE_TOOLS | EXPLORE_TOOLS), None)
-    edit_at = next((i for i, name in enumerate(names) if name in EDIT_TOOLS), None)
+    names = trace.tool_sequence()
+    read_at = next((i for i, name in enumerate(names) if is_evidence_tool(name)), None)
+    edit_at = next((i for i, name in enumerate(names) if is_edit_tool(name)), None)
     if read_at is None or edit_at is None:
         return False
     return read_at < edit_at
@@ -436,7 +714,7 @@ def _basename(path: str) -> str:
 def ngram_tool_policies(traces: list[AgentTrace], n: int = 3) -> list[tuple[tuple[str, ...], int]]:
     counts: Counter[tuple[str, ...]] = Counter()
     for trace in traces:
-        sequence = [name.lower() for name in trace.tool_sequence()]
+        sequence = [normalize_tool(name) for name in trace.tool_sequence()]
         if len(sequence) < n:
             continue
         for index in range(len(sequence) - n + 1):

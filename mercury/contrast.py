@@ -3,15 +3,23 @@
 from __future__ import annotations
 
 from mercury.models import AgentTrace, CardKind, OperationalCard, card_id
-from mercury.phases import first_tool, segment_phases
+from mercury.phases import first_tool, normalize_tool, segment_phases
 
 
 def contrast_traces(student: AgentTrace, teacher: AgentTrace) -> list[OperationalCard]:
-    """Where a lesser model diverged, emit 'don't do X, do Y' cards."""
+    """Where a lesser model diverged, emit 'don't do X, do Y' cards.
+
+    Contrast is the strongest decision-function signal we have: the student
+    documents what was chosen *against*, the teacher documents the replacement.
+    """
     cards: list[OperationalCard] = []
     student_first = first_tool(student)
     teacher_first = first_tool(teacher)
-    if student_first and teacher_first and student_first.lower() != teacher_first.lower():
+    if (
+        student_first
+        and teacher_first
+        and normalize_tool(student_first) != normalize_tool(teacher_first)
+    ):
         cards.append(
             OperationalCard(
                 id=card_id("contrast-first", student.id, teacher.id, teacher_first),
@@ -25,6 +33,8 @@ def contrast_traces(student: AgentTrace, teacher: AgentTrace) -> list[Operationa
                 ),
                 rationale="Contrastive first-action divergence on a matched task.",
                 tools=[teacher_first],
+                chose=f"start with `{teacher_first}`",
+                rejected=[f"start with `{student_first}`"],
                 task_type=teacher.task_type,
                 source_trace_id=teacher.id,
                 source_model=teacher.model,
@@ -49,6 +59,8 @@ def contrast_traces(student: AgentTrace, teacher: AgentTrace) -> list[Operationa
                 ),
                 rationale="Phase-level contrast between a failed student run and a successful teacher run.",
                 tools=teacher.tool_sequence()[:8],
+                chose=" → ".join(teacher_phases),
+                rejected=[" → ".join(student_phases) or "(no phases)"],
                 task_type=teacher.task_type,
                 source_trace_id=teacher.id,
                 source_model=teacher.model,
@@ -77,6 +89,8 @@ def contrast_traces(student: AgentTrace, teacher: AgentTrace) -> list[Operationa
                 procedure=". ".join(bits) + ".",
                 rationale="File-set mismatch on a contrastive pair.",
                 tools=["read", "grep"],
+                chose=", ".join(_base(path) for path in missing[:4]) if missing else "frontier file set",
+                rejected=[_base(path) for path in extra[:4]],
                 task_type=teacher.task_type,
                 source_trace_id=teacher.id,
                 source_model=teacher.model,

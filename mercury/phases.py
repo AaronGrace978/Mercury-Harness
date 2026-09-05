@@ -1,4 +1,10 @@
-"""Segment an agent trace into operational phases."""
+"""Segment an agent trace into operational phases.
+
+Tool names are normalized across harnesses (Cursor, Claude Code, Codex,
+OpenAI Assistants, Gemini, etc.) before phase membership is tested. Raw
+alias sets still exist for callers that need the expanded vocabulary;
+prefer ``normalize_tool`` / ``tool_phase`` / ``is_*_tool`` everywhere else.
+"""
 
 from __future__ import annotations
 
@@ -6,29 +12,105 @@ from dataclasses import dataclass, field
 
 from mercury.models import AgentTrace, EventType, TraceEvent
 
-EXPLORE_TOOLS = {
-    "grep",
-    "glob",
-    "glob_file_search",
-    "list_dir",
-    "ls",
-    "semantic_search",
-    "codebase_search",
-    "rg",
-    "find",
+# Canonical tool families used for phase membership and grading.
+CANONICAL_EXPLORE = "explore"
+CANONICAL_LOCALIZE = "localize"
+CANONICAL_EDIT = "edit"
+CANONICAL_VERIFY = "verify"
+CANONICAL_PLAN = "plan"
+CANONICAL_UNKNOWN = "unknown"
+
+# Map every known harness alias → a canonical family name.
+# Keys are lowercase; matching strips non-alphanumerics so
+# ``run_terminal_cmd``, ``RunTerminalCmd``, and ``run-terminal-cmd`` collide.
+_TOOL_FAMILY: dict[str, str] = {
+    # explore
+    "grep": CANONICAL_EXPLORE,
+    "rg": CANONICAL_EXPLORE,
+    "find": CANONICAL_EXPLORE,
+    "glob": CANONICAL_EXPLORE,
+    "globfilesearch": CANONICAL_EXPLORE,
+    "file_search": CANONICAL_EXPLORE,
+    "filesearch": CANONICAL_EXPLORE,
+    "listdir": CANONICAL_EXPLORE,
+    "list_dir": CANONICAL_EXPLORE,
+    "ls": CANONICAL_EXPLORE,
+    "semanticsearch": CANONICAL_EXPLORE,
+    "semantic_search": CANONICAL_EXPLORE,
+    "codebasesearch": CANONICAL_EXPLORE,
+    "codebase_search": CANONICAL_EXPLORE,
+    "searchcodebase": CANONICAL_EXPLORE,
+    "workspace_symbols": CANONICAL_EXPLORE,
+    "workspacesymbols": CANONICAL_EXPLORE,
+    "search_files": CANONICAL_EXPLORE,
+    "searchfiles": CANONICAL_EXPLORE,
+    "websearch": CANONICAL_EXPLORE,
+    "web_search": CANONICAL_EXPLORE,
+    # localize / read
+    "read": CANONICAL_LOCALIZE,
+    "readfile": CANONICAL_LOCALIZE,
+    "read_file": CANONICAL_LOCALIZE,
+    "open": CANONICAL_LOCALIZE,
+    "open_file": CANONICAL_LOCALIZE,
+    "openfile": CANONICAL_LOCALIZE,
+    "cat": CANONICAL_LOCALIZE,
+    "view": CANONICAL_LOCALIZE,
+    "get_file_contents": CANONICAL_LOCALIZE,
+    "getfilecontents": CANONICAL_LOCALIZE,
+    "fetch": CANONICAL_LOCALIZE,
+    # edit
+    "edit": CANONICAL_EDIT,
+    "applypatch": CANONICAL_EDIT,
+    "apply_patch": CANONICAL_EDIT,
+    "searchreplace": CANONICAL_EDIT,
+    "search_replace": CANONICAL_EDIT,
+    "strreplace": CANONICAL_EDIT,
+    "str_replace": CANONICAL_EDIT,
+    "write": CANONICAL_EDIT,
+    "writefile": CANONICAL_EDIT,
+    "write_file": CANONICAL_EDIT,
+    "create_file": CANONICAL_EDIT,
+    "createfile": CANONICAL_EDIT,
+    "multiedit": CANONICAL_EDIT,
+    "multi_edit": CANONICAL_EDIT,
+    "editnotebook": CANONICAL_EDIT,
+    "edit_notebook": CANONICAL_EDIT,
+    "delete": CANONICAL_EDIT,
+    "delete_file": CANONICAL_EDIT,
+    "deletefile": CANONICAL_EDIT,
+    "notebookedit": CANONICAL_EDIT,
+    # verify / shell
+    "shell": CANONICAL_VERIFY,
+    "bash": CANONICAL_VERIFY,
+    "zsh": CANONICAL_VERIFY,
+    "terminal": CANONICAL_VERIFY,
+    "runterminalcmd": CANONICAL_VERIFY,
+    "run_terminal_cmd": CANONICAL_VERIFY,
+    "run_command": CANONICAL_VERIFY,
+    "runcommand": CANONICAL_VERIFY,
+    "execute": CANONICAL_VERIFY,
+    "exec": CANONICAL_VERIFY,
+    "test": CANONICAL_VERIFY,
+    "pytest": CANONICAL_VERIFY,
+    "run_tests": CANONICAL_VERIFY,
+    "runtests": CANONICAL_VERIFY,
+    # plan
+    "todowrite": CANONICAL_PLAN,
+    "todo_write": CANONICAL_PLAN,
+    "todoread": CANONICAL_PLAN,
+    "todo_read": CANONICAL_PLAN,
+    "createplan": CANONICAL_PLAN,
+    "create_plan": CANONICAL_PLAN,
+    "update_plan": CANONICAL_PLAN,
+    "updateplan": CANONICAL_PLAN,
 }
-LOCALIZE_TOOLS = {"read", "read_file", "open", "cat"}
-EDIT_TOOLS = {
-    "edit",
-    "apply_patch",
-    "search_replace",
-    "write",
-    "write_file",
-    "strreplace",
-    "str_replace",
-}
-VERIFY_TOOLS = {"shell", "bash", "run_terminal_cmd", "terminal", "test", "pytest"}
-PLAN_TOOLS = {"todo_write", "todo_read", "create_plan"}
+
+# Backward-compatible expanded sets (raw aliases, lowercase). Prefer helpers.
+EXPLORE_TOOLS = {k for k, v in _TOOL_FAMILY.items() if v == CANONICAL_EXPLORE}
+LOCALIZE_TOOLS = {k for k, v in _TOOL_FAMILY.items() if v == CANONICAL_LOCALIZE}
+EDIT_TOOLS = {k for k, v in _TOOL_FAMILY.items() if v == CANONICAL_EDIT}
+VERIFY_TOOLS = {k for k, v in _TOOL_FAMILY.items() if v == CANONICAL_VERIFY}
+PLAN_TOOLS = {k for k, v in _TOOL_FAMILY.items() if v == CANONICAL_PLAN}
 
 _SELF_CORRECT = (
     "actually",
@@ -38,7 +120,71 @@ _SELF_CORRECT = (
     "on second thought",
     "correction",
     "let me redo",
+    "rather than",
+    "not that",
+    "wrong approach",
 )
+
+
+def _compact(name: str) -> str:
+    """Lowercase and strip separators so harness naming variants collide."""
+    return "".join(ch for ch in name.lower() if ch.isalnum() or ch == "_")
+
+
+def normalize_tool(name: str | None) -> str:
+    """Map a harness-specific tool name to a canonical family.
+
+    Returns one of: explore, localize, edit, verify, plan, or the compacted
+    original name when unrecognized (so unknown tools still fingerprint).
+    """
+    if not name:
+        return CANONICAL_UNKNOWN
+    compact = _compact(name)
+    if compact in _TOOL_FAMILY:
+        return _TOOL_FAMILY[compact]
+    # Also try without underscores for CamelCase leftovers.
+    alnum = "".join(ch for ch in compact if ch.isalnum())
+    if alnum in _TOOL_FAMILY:
+        return _TOOL_FAMILY[alnum]
+    return compact or CANONICAL_UNKNOWN
+
+
+def tool_phase(name: str | None) -> str:
+    """Phase name for a tool call: explore/localize/edit/verify/plan/act."""
+    family = normalize_tool(name)
+    if family in {
+        CANONICAL_EXPLORE,
+        CANONICAL_LOCALIZE,
+        CANONICAL_EDIT,
+        CANONICAL_VERIFY,
+        CANONICAL_PLAN,
+    }:
+        return family
+    return "act"
+
+
+def is_explore_tool(name: str | None) -> bool:
+    return normalize_tool(name) == CANONICAL_EXPLORE
+
+
+def is_localize_tool(name: str | None) -> bool:
+    return normalize_tool(name) == CANONICAL_LOCALIZE
+
+
+def is_edit_tool(name: str | None) -> bool:
+    return normalize_tool(name) == CANONICAL_EDIT
+
+
+def is_verify_tool(name: str | None) -> bool:
+    return normalize_tool(name) == CANONICAL_VERIFY
+
+
+def is_plan_tool(name: str | None) -> bool:
+    return normalize_tool(name) == CANONICAL_PLAN
+
+
+def is_evidence_tool(name: str | None) -> bool:
+    return normalize_tool(name) in {CANONICAL_EXPLORE, CANONICAL_LOCALIZE}
 
 
 @dataclass
@@ -81,20 +227,13 @@ def segment_phases(trace: AgentTrace) -> list[Phase]:
 def _phase_name(event: TraceEvent) -> str:
     if event.type is EventType.TOOL and event.is_error:
         return "recover"
-    names = [name.lower() for name in event.tool_names()]
+    names = event.tool_names()
     if event.type is EventType.TOOL and looks_like_verify_output(event.content) and event.is_error:
         return "recover"
     for name in names:
-        if name in EXPLORE_TOOLS:
-            return "explore"
-        if name in LOCALIZE_TOOLS:
-            return "localize"
-        if name in EDIT_TOOLS:
-            return "edit"
-        if name in VERIFY_TOOLS:
-            return "verify"
-        if name in PLAN_TOOLS:
-            return "plan"
+        phase = tool_phase(name)
+        if phase != "act":
+            return phase
     if event.type is EventType.ASSISTANT and event.content and not names:
         lowered = event.content.lower()
         if any(token in lowered for token in _SELF_CORRECT):
@@ -113,6 +252,11 @@ def looks_like_verify_output(content: str) -> bool:
 def first_tool(trace: AgentTrace) -> str | None:
     sequence = trace.tool_sequence()
     return sequence[0] if sequence else None
+
+
+def first_tool_family(trace: AgentTrace) -> str | None:
+    opener = first_tool(trace)
+    return normalize_tool(opener) if opener else None
 
 
 def contains_self_correction(trace: AgentTrace) -> list[TraceEvent]:

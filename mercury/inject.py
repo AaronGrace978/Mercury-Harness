@@ -52,6 +52,10 @@ class OperatingPack:
             lines.append(f"## {card.kind.value.replace('_', ' ').title()}: {card.title}")
             lines.append(f"- When: {card.situation}")
             lines.append(f"- Do: {card.procedure}")
+            if card.chose:
+                lines.append(f"- Chose: {card.chose}")
+            if card.rejected:
+                lines.append(f"- Not: {'; '.join(card.rejected[:6])}")
             if card.rationale:
                 lines.append(f"- Why: {card.rationale}")
             if card.tools:
@@ -139,7 +143,7 @@ def _fit_budget(
     for item in ordered:
         kind = item.card.kind
         cap = 3 if kind is CardKind.STANDING_ORDER else 1
-        if kind in {CardKind.CONTRAST, CardKind.TOOL_POLICY}:
+        if kind in {CardKind.CONTRAST, CardKind.TOOL_POLICY, CardKind.DECISION}:
             cap = 2
         if used_kind.get(kind, 0) >= cap:
             continue

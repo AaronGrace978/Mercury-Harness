@@ -38,8 +38,17 @@ def main(argv: list[str] | None = None) -> int:
     contrast.add_argument("teacher", help="Successful frontier trace JSON")
 
     sub.add_parser("status", help="Show store statistics")
-    grade = sub.add_parser("grade", help="Deterministically grade how a trace operated (no LLM judge)")
+    grade = sub.add_parser(
+        "grade",
+        help="Deterministically grade how a trace operated (policy floor + competence ceiling)",
+    )
     grade.add_argument("trace", help="Path to a Mercury, OpenAI, or Cursor-like trace JSON file")
+    grade.add_argument(
+        "--compare",
+        dest="compare",
+        default=None,
+        help="Optional second trace: print grade delta (after − before). First trace is before.",
+    )
     grade.add_argument("--json", action="store_true", help="Print the grade as JSON")
     demo = sub.add_parser("demo", help="Run the built-in frontier → lesser flywheel on fixture traces")
     demo.add_argument("--json", action="store_true", help="Print pack as JSON")
@@ -74,8 +83,23 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "grade":
-        from mercury.grade import grade_trace
+        from mercury.grade import grade_delta, grade_trace
         from mercury.traceio import load_trace
+
+        if args.compare:
+            delta = grade_delta(load_trace(args.trace), load_trace(args.compare))
+            if args.json:
+                json.dump(delta.as_dict(), sys.stdout, indent=2)
+                sys.stdout.write("\n")
+            else:
+                print(delta.summary())
+                print()
+                print("Before:")
+                print(delta.before.summary())
+                print()
+                print("After:")
+                print(delta.after.summary())
+            return 0
 
         report = grade_trace(load_trace(args.trace))
         if args.json:

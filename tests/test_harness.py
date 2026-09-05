@@ -4,6 +4,17 @@ from mercury.models import CardKind
 from mercury.tiers import ModelTier
 
 
+def test_cold_start_seeds_standing_orders(tmp_path):
+    harness = MercuryHarness.init(tmp_path / "store")
+    kinds = {card.kind for card in harness.store.cards()}
+    assert CardKind.STANDING_ORDER in kinds
+    pack = harness.pack("Fix a redirect bug", model="gpt-4o-mini")
+    assert any(card.kind is CardKind.STANDING_ORDER for card in pack.cards)
+    rendered = pack.render().lower()
+    assert "standing orders" in rendered
+    assert "search before" in rendered or "verify after" in rendered
+
+
 def test_flywheel_embeds_frontier_how_into_lesser_pack(tmp_path):
     harness = MercuryHarness.init(tmp_path / "store")
     harness.capture(frontier_auth_fix())
