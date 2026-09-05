@@ -1,5 +1,7 @@
 # Mercury Harness
 
+![Mercury Harness](docs/mercury-harness-readme.png)
+
 A premium agent harness that **embeds how a frontier model operates into lesser models**.
 
 Start the work with a frontier model. Mercury records the *procedure* — tool order, recovery loops, what not to touch — and injects that operational knowledge into the next session even if that session runs on a cheaper model.
@@ -38,7 +40,17 @@ Run the same class of task later on `gpt-4o-mini` or Haiku and the pack is sitti
 4. **Embed** with a local hashing vector + BM25 hybrid retriever (no API key, no model download).
 5. **Inject** a token-budgeted operating pack at lesser-model session start, or as a Cursor rule.
 
-Teacher traces are gated by model tier. Opus / GPT-5 / Grok-4 / o3 teach. Mini / Haiku / Flash receive. Successful student traces do not pollute the store unless you opt in.
+Teacher traces are gated by model tier. Opus / Fable / GPT-5.6 Sol / Grok-4 / o3 teach — and so do Ollama Cloud flagships such as `deepseek-v4-pro`, `kimi-k3`, `glm-5.3`, `minimax-m3`, `gpt-oss:120b`, and `qwen3.5:397b`. Mini / Haiku / Flash / Luna receive. Successful student traces do not pollute the store unless you opt in.
+
+### Recognized model tiers
+
+| Tier | Role | Examples |
+|---|---|---|
+| **Frontier** (teacher) | Distill operating packs | `claude-opus-4.1`, `claude-fable-5`, `gpt-5.6-sol`, `grok-4.5`, Ollama Cloud: `deepseek-v4-pro`, `kimi-k3`, `glm-5.3`, `minimax-m3`, `mistral-large-3`, `gpt-oss:120b`, `nemotron-3-ultra` |
+| **Capable** (student) | Receive larger packs | `claude-sonnet-5`, `gpt-5.6-terra`, `gpt-oss:20b`, `gemma4:31b`, `nemotron-3-super`, `qwen3.5` |
+| **Lesser** (student) | Receive tight packs | `gpt-4o-mini`, `gpt-5.6-luna`, `haiku`, `gemini-3.5-flash`, `deepseek-v4-flash`, `glm-5.3-flash`, `nemotron-3-nano` |
+
+Cloud and local Ollama ids both work (`kimi-k3:cloud`, `gpt-oss:120b-cloud`).
 
 ## Install
 
