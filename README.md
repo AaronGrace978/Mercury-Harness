@@ -183,3 +183,12 @@ mercury demo
 ```bash
 pytest
 ```
+
+## License
+
+**Proprietary — Copyright © 2026 Aaron Grace. All rights reserved.**
+
+Mercury Harness is proprietary software owned exclusively by Aaron Grace.
+No permission is granted to use, copy, modify, merge, publish, distribute,
+sublicense, or sell this software except under a separate written agreement
+with Aaron Grace. See [`LICENSE`](LICENSE) for the full terms.

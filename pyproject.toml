@@ -8,8 +8,8 @@ version = "0.1.0"
 description = "Frontier operational knowledge embedding for lesser agent models"
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "MIT" }
-authors = [{ name = "Mercury Harness" }]
+license = { text = "Proprietary" }
+authors = [{ name = "Aaron Grace", email = "aarongrace978@gmail.com" }]
 keywords = [
   "agents",
   "distillation",
