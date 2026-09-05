@@ -8,7 +8,7 @@ from typing import Any
 from mercury.contrast import contrast_traces
 from mercury.distill import distill_standing_orders, distill_trace
 from mercury.embed import HashingEmbedder
-from mercury.inject import build_pack
+from mercury.inject import OperatingPack, build_pack
 from mercury.models import AgentTrace, OperationalCard
 from mercury.store import KnowledgeStore
 from mercury.tiers import ModelTier, is_teacher_tier

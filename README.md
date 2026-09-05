@@ -97,6 +97,14 @@ mercury contrast traces/mini-failed.json traces/opus-success.json
 
 That is the core innovation: **negative knowledge**. The lesser model documents what not to do; the frontier model documents the replacement procedure.
 
+### Grade how a run operated (no LLM judge)
+
+```bash
+mercury grade traces/opus-success.json
+```
+
+Deterministic behavioral checks — explored first, read before edit, verified after edit, recovered from errors without repeating an identical failed edit — scored and printed as a report or JSON. Grade a lesser run before and after a Frontier Operating Pack to prove the pack changed *how it operated*, not just what it answered.
+
 ## Python API
 
 ```python

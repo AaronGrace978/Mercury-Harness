@@ -38,6 +38,9 @@ def main(argv: list[str] | None = None) -> int:
     contrast.add_argument("teacher", help="Successful frontier trace JSON")
 
     sub.add_parser("status", help="Show store statistics")
+    grade = sub.add_parser("grade", help="Deterministically grade how a trace operated (no LLM judge)")
+    grade.add_argument("trace", help="Path to a Mercury, OpenAI, or Cursor-like trace JSON file")
+    grade.add_argument("--json", action="store_true", help="Print the grade as JSON")
     demo = sub.add_parser("demo", help="Run the built-in frontier → lesser flywheel on fixture traces")
     demo.add_argument("--json", action="store_true", help="Print pack as JSON")
 
@@ -68,6 +71,18 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "contrast":
         cards = harness.contrast(args.student, args.teacher)
         print(f"Wrote {len(cards)} contrastive/teacher cards")
+        return 0
+
+    if args.command == "grade":
+        from mercury.grade import grade_trace
+        from mercury.traceio import load_trace
+
+        report = grade_trace(load_trace(args.trace))
+        if args.json:
+            json.dump(report.as_dict(), sys.stdout, indent=2)
+            sys.stdout.write("\n")
+        else:
+            print(report.summary())
         return 0
 
     if args.command == "status":

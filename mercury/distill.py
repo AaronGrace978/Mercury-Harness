@@ -9,6 +9,7 @@ from __future__ import annotations
 from collections import Counter
 
 from mercury.fingerprint import error_signature, extract_paths
+from mercury.grade import blind_retry
 from mercury.models import (
     AgentTrace,
     CardKind,
@@ -320,6 +321,28 @@ def _anti_pattern_cards(trace: AgentTrace) -> list[OperationalCard]:
                 source_trace_id=trace.id,
                 source_model=trace.model,
                 confidence=0.72,
+                languages=list(trace.languages),
+            )
+        )
+    retry_hit = blind_retry(trace)
+    if retry_hit is not None:
+        detail, action = retry_hit
+        cards.append(
+            OperationalCard(
+                id=card_id("anti-blind-retry", trace.id, action.name, action.args_hash),
+                kind=CardKind.ANTI_PATTERN,
+                title="Never re-run an identical edit after a failure",
+                situation=trace.task,
+                procedure=(
+                    f"This run {detail} (`{action.name}`). "
+                    "Change the approach instead: read the failing site, fix the diagnosis, then edit differently."
+                ),
+                rationale="Repeating a failed edit unchanged is the strongest negative signal in the trace.",
+                tools=[action.name],
+                task_type=trace.task_type,
+                source_trace_id=trace.id,
+                source_model=trace.model,
+                confidence=0.78,
                 languages=list(trace.languages),
             )
         )
