@@ -101,9 +101,10 @@ That is the core innovation: **negative knowledge**. The lesser model documents 
 
 ```bash
 mercury grade traces/opus-success.json
+mercury grade traces/mini-before.json --compare traces/mini-after-pack.json
 ```
 
-Deterministic behavioral checks — explored first, read before edit, verified after edit, recovered from errors without repeating an identical failed edit — scored and printed as a report or JSON. Grade a lesser run before and after a Frontier Operating Pack to prove the pack changed *how it operated*, not just what it answered.
+Deterministic behavioral checks — policy floor plus competence ceiling — scored and printed as a report or JSON. Grade a lesser run before and after a Frontier Operating Pack to prove the pack changed *how it operated*, not just what it answered.
 
 ## Python API
 
@@ -135,13 +136,21 @@ pack = harness.pack(
 |---|---|
 | **Playbook** | Compressed phase sequence: explore → localize → edit → verify |
 | **Tool policy** | First action + preferred tool order |
+| **Decision** | Chose X over Y — rejected branches, not just the path taken |
 | **Recovery** | Error-like tool result + the next 1–5 frontier moves |
 | **Heuristic** | Test-before-patch, retest-after-edit |
 | **Anti-pattern** | Self-corrections ("actually…") and edit-first failures |
-| **Standing order** | Majority behavior across frontier traces |
-| **Contrast** | Student/teacher divergence on a matched task |
+| **Standing order** | Seeded on cold start; provisional from 1 teacher; majority after ≥2 |
+| **Contrast** | Student/teacher divergence on a matched task (explicit rejected moves) |
 
-Cards carry confidence, task type, languages, and an optional error signature so retrieval can bias toward the current failure.
+Cards carry confidence, task type, languages, optional `chose` / `rejected` fields, and an error signature so retrieval can bias toward the current failure.
+
+## Honest limits (and how Mercury addresses them)
+
+1. **Path ≠ judgment.** A raw playbook only shows what happened. Decision cards and contrast pairs record what was chosen *against* (edit-first, wrong file, blind retry) so the pack transfers judgment, not surface mimicry.
+2. **Cold start.** Standing orders no longer wait for majority volume. Empty stores get seeded defaults; a single successful frontier trace promotes provisional orders; ≥2 successful teachers confirm them via majority thresholds.
+3. **Cross-harness tool names.** `normalize_tool()` maps Cursor / Claude Code / Codex / OpenAI aliases (`rg`, `StrReplace`, `run_terminal_cmd`, `Bash`, …) onto canonical families before phase segmentation and grading.
+4. **Grade is a floor and a ceiling.** Policy checks (`explored_first`, `read_before_edit`, …) are the floor. Competence checks (`evidence_depth`, `focused_edits`, `no_edit_thrash`, `phase_completeness`) catch explore-once-then-flail. Prefer `policy_score` / `competence_score`, or `mercury grade A.json --compare B.json` as a before/after pack delta.
 
 ## Trace format
 
@@ -182,6 +191,7 @@ mercury capture TRACE.json [--teacher]
 mercury distill
 mercury pack --task "..." [--model NAME] [--error SIG] [--format markdown|cursor-rule|json]
 mercury contrast STUDENT.json TEACHER.json
+mercury grade TRACE.json [--compare AFTER.json] [--json]
 mercury status
 mercury demo
 ```

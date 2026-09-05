@@ -43,7 +43,11 @@ class MercuryHarness:
     @classmethod
     def init(cls, path: str | Path = ".mercury", **kwargs: Any) -> "MercuryHarness":
         Path(path).mkdir(parents=True, exist_ok=True)
-        return cls(path, **kwargs)
+        harness = cls(path, **kwargs)
+        # Cold start: seed provisional standing orders so packs are never empty
+        # while waiting for majority frontier volume.
+        harness._refresh_standing_orders()
+        return harness
 
     def capture(
         self,

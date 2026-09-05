@@ -12,3 +12,7 @@ def test_contrast_emits_first_action_and_file_divergence():
     assert "grep" in blob
     assert "login.tsx" in blob
     assert "session.ts" in blob or "auth.ts" in blob or "middleware" in blob
+    first = next(card for card in cards if "Open like" in card.title)
+    assert first.chose
+    assert first.rejected
+    assert "search_replace" in " ".join(first.rejected).lower() or "search_replace" in first.procedure.lower()

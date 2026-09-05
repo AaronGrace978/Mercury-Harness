@@ -1,7 +1,7 @@
 import json
 
 from mercury.cli import main
-from mercury.demo import frontier_auth_fix
+from mercury.demo import frontier_auth_fix, lesser_auth_fail
 
 
 def test_cli_demo_prints_pack(tmp_path, capsys):
@@ -37,13 +37,23 @@ def test_cli_pack_json(tmp_path, capsys):
 def test_cli_grade_command(tmp_path, capsys):
     trace_path = tmp_path / "opus.json"
     trace_path.write_text(frontier_auth_fix().model_dump_json(), encoding="utf-8")
+    lesser_path = tmp_path / "mini.json"
+    lesser_path.write_text(lesser_auth_fail().model_dump_json(), encoding="utf-8")
     store = str(tmp_path / "s")
     code = main(["--store", store, "grade", str(trace_path)])
     out = capsys.readouterr().out
     assert code == 0
     assert "Behavior grade" in out
     assert "explored_first" in out
+    assert "policy floor" in out
+    assert "competence ceiling" in out
     code = main(["--store", store, "grade", str(trace_path), "--json"])
     payload = json.loads(capsys.readouterr().out)
     assert payload["score"] >= 0.8
+    assert "policy_score" in payload
+    assert "competence_score" in payload
     assert payload["model"] == "claude-opus-4.1"
+    code = main(["--store", store, "grade", str(lesser_path), "--compare", str(trace_path)])
+    delta_out = capsys.readouterr().out
+    assert code == 0
+    assert "Grade delta" in delta_out

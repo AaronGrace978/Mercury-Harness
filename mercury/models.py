@@ -34,6 +34,7 @@ class CardKind(str, Enum):
     ANTI_PATTERN = "anti_pattern"
     STANDING_ORDER = "standing_order"
     CONTRAST = "contrast"
+    DECISION = "decision"
 
 
 class TaskType(str, Enum):
@@ -120,6 +121,10 @@ class OperationalCard(BaseModel):
     procedure: str
     rationale: str = ""
     tools: list[str] = Field(default_factory=list)
+    # Decision-function fields: what was chosen *and* what was ruled out.
+    # Observed-path cards leave these empty; decision/contrast cards fill them.
+    chose: str = ""
+    rejected: list[str] = Field(default_factory=list)
     task_type: TaskType = TaskType.GENERAL
     source_trace_id: str
     source_model: str
@@ -138,6 +143,8 @@ class OperationalCard(BaseModel):
             self.situation,
             self.procedure,
             self.rationale,
+            self.chose,
+            " ".join(self.rejected),
             " ".join(self.tools),
             self.task_type.value,
             " ".join(self.languages),
