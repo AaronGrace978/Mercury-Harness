@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mercury-harness"
+version = "0.1.0"
+description = "Frontier operational knowledge embedding for lesser agent models"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Mercury Harness" }]
+keywords = [
+  "agents",
+  "distillation",
+  "operational-knowledge",
+  "harness",
+  "llm",
+]
+dependencies = [
+  "pydantic>=2.6",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+mercury = "mercury.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/AaronGrace978/Mercury-Harness"
+
+[tool.setuptools.packages.find]
+include = ["mercury*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q --strict-markers"
+pythonpath = ["."]
